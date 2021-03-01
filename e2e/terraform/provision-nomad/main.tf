@@ -127,8 +127,8 @@ resource "null_resource" "upload_configs" {
     destination = "/tmp/"
   }
 
-  provisioner "local-exec" {
-    command = "until ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i ${var.connection.private_key} -p ${var.connection.port} ${var.connection.user}@${var.connection.host} '${local.update_config_command}'; do sleep 5; done"
+  provisioner "remote-exec" {
+    inline = [local.update_config_command]
   }
 
 }
