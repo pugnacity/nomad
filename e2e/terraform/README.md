@@ -9,7 +9,7 @@ cluster along with configuration files for Nomad, Consul, and Vault.
 
 ## Setup
 
-You'll need Terraform 0.15.x, as well as AWS credentials to create the Nomad
+You'll need Terraform 0.14.7+, as well as AWS credentials to create the Nomad
 cluster. This Terraform stack assumes that an appropriate instance role has
 been configured elsewhere and that you have the ability to `AssumeRole` into
 the AWS account.
