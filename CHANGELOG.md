@@ -1,6 +1,7 @@
 ## 1.1.0 (Unreleased)
 
 IMPROVEMENTS:
+ * core: Persist metadata about most recent drain in Node.LastDrain [[GH-10250](https://github.com/hashicorp/nomad/issues/10250)]
  * api: Removed unimplemented `CSIVolumes.PluginList` API. [[GH-10158](https://github.com/hashicorp/nomad/issues/10158)]
  * cli: Update defaults for `nomad operator debug` flags `-interval` and `-server-id` to match common usage. [[GH-10121](https://github.com/hashicorp/nomad/issues/10121)]
  * consul/connect: Enable setting `local_bind_address` field on connect upstreams [[GH-6248](https://github.com/hashicorp/nomad/issues/6248)]
