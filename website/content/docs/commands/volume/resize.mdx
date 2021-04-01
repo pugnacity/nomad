@@ -16,15 +16,15 @@ will return an error.
 ## Usage
 
 ```plaintext
-nomad volume resize [options] [volume] [size]
+nomad volume resize [options] [volume] [-min size] [-max size]
 ```
 
-The `volume resize` command requires two arguments, specifying the ID of
-volume and the new size. The size argument accepts human-friendly suffixes
-such as `"100GiB"`. The volume must be [registered] with Nomad in order to be
-resized. Resizing will fail if the volume is still in use by an allocation or
-in the process of being unpublished, if the plugin does not support online
-resize. CSI does not currently support reducing the size of volumes.
+The `volume resize` command requires one argument specifying the ID of the
+volume, and at least one option specifying the new new. The volume must be
+[registered] with Nomad in order to be resized. Resizing will fail if the
+volume is still in use by an allocation or in the process of being
+unpublished, if the plugin does not support online resize. CSI does not
+currently support reducing the size of volumes.
 
 When ACLs are enabled, this command requires a token with the
 `csi-write-volume` capability for the volume's namespace.
@@ -32,6 +32,19 @@ When ACLs are enabled, this command requires a token with the
 ## General Options
 
 @include 'general_options.mdx'
+
+## Resize Options
+
+- `-min` `(string: <optional>)` - Option for setting the capacity. The new
+  volume size must be at least this large, in bytes. The storage provider may
+  return a volume that is larger than this value. Accepts human-friendly
+  suffixes such as `"100GiB"`.
+
+- `-max` `(string: <optional>)` - Option for setting the capacity. The volume
+  must be no more than this large, in bytes. The storage provider may return a
+  volume that is smaller than this value. Accepts human-friendly suffixes such
+  as `"100GiB"`.
+
 
 [csi]: https://github.com/container-storage-interface/spec
 [csi_plugins_internals]: /docs/internals/plugins/csi#csi-plugins
