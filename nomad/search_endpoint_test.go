@@ -962,7 +962,8 @@ func TestSearch_FuzzySearch_ACL(t *testing.T) {
 	job := mock.Job()
 	registerJob(s, t, job)
 
-	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1001, mock.Node()))
+	node := mock.Node()
+	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1001, node))
 
 	req := &structs.FuzzySearchRequest{
 		Text:         "set-this-in-test",
@@ -1021,7 +1022,7 @@ func TestSearch_FuzzySearch_ACL(t *testing.T) {
 		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
 		require.Len(t, resp.Matches[structs.Jobs], 1)
 		require.Equal(t, structs.FuzzyMatch{
-			ID:    "my-job",
+			ID:    job.ID,
 			Scope: []string{"default"},
 		}, resp.Matches[structs.Jobs][0])
 
@@ -1041,11 +1042,12 @@ func TestSearch_FuzzySearch_ACL(t *testing.T) {
 		require.Equal(t, uint64(1001), resp.Index)
 		require.Len(t, resp.Matches[structs.Jobs], 1)
 		require.Equal(t, structs.FuzzyMatch{
-			ID: "my-job", Scope: []string{"default"},
+			ID: job.ID, Scope: []string{"default"},
 		}, resp.Matches[structs.Jobs][0])
 		require.Len(t, resp.Matches[structs.Nodes], 1)
 		require.Equal(t, structs.FuzzyMatch{
-			ID: "foobar",
+			ID:    "foobar",
+			Scope: []string{node.ID},
 		}, resp.Matches[structs.Nodes][0])
 	}
 }
@@ -1520,7 +1522,7 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 		var resp structs.FuzzySearchResponse
 		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
 		require.Len(t, resp.Matches[structs.Jobs], 1)
-		require.Equal(t, job2.Name, resp.Matches[structs.Jobs][0].ID)
+		require.Equal(t, job2.ID, resp.Matches[structs.Jobs][0].ID)
 
 		// Index of job - not node - because node context is filtered out
 		require.Equal(t, uint64(504), resp.Index)
@@ -1629,63 +1631,63 @@ func TestSearch_FuzzySearch_Job(t *testing.T) {
 		require.Len(t, m[structs.Services], 3)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "some-sleepy-task-svc-one",
-			Scope: []string{"team-sleepy", "demo-sleep", "qa-sleeper-group-one", "qa-sleep-task-one"},
+			Scope: []string{"team-sleepy", job.ID, "qa-sleeper-group-one", "qa-sleep-task-one"},
 		}, {
 			ID:    "some-sleepy-task-svc-two",
-			Scope: []string{"team-sleepy", "demo-sleep", "prod-sleeper-group-one", "prod-task-two"},
+			Scope: []string{"team-sleepy", job.ID, "prod-sleeper-group-one", "prod-task-two"},
 		}, {
 			ID:    "qa-group-sleep-svc-one",
-			Scope: []string{"team-sleepy", "demo-sleep", "qa-sleeper-group-one"},
+			Scope: []string{"team-sleepy", job.ID, "qa-sleeper-group-one"},
 		}}, m[structs.Services])
 
 		// 3 groups
 		require.Len(t, m[structs.Groups], 3)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "sleep-in-java",
-			Scope: []string{"team-sleepy", "demo-sleep"},
+			Scope: []string{"team-sleepy", job.ID},
 		}, {
 			ID:    "qa-sleeper-group-one",
-			Scope: []string{"team-sleepy", "demo-sleep"},
+			Scope: []string{"team-sleepy", job.ID},
 		}, {
 			ID:    "prod-sleeper-group-one",
-			Scope: []string{"team-sleepy", "demo-sleep"},
+			Scope: []string{"team-sleepy", job.ID},
 		}}, m[structs.Groups])
 
 		// 3 tasks (1 does not match)
 		require.Len(t, m[structs.Tasks], 3)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "qa-sleep-task-one",
-			Scope: []string{"team-sleepy", "demo-sleep", "qa-sleeper-group-one"},
+			Scope: []string{"team-sleepy", job.ID, "qa-sleeper-group-one"},
 		}, {
 			ID:    "prod-sleep-task-one",
-			Scope: []string{"team-sleepy", "demo-sleep", "prod-sleeper-group-one"},
+			Scope: []string{"team-sleepy", job.ID, "prod-sleeper-group-one"},
 		}, {
 			ID:    "prod-java-sleep",
-			Scope: []string{"team-sleepy", "demo-sleep", "sleep-in-java"},
+			Scope: []string{"team-sleepy", job.ID, "sleep-in-java"},
 		}}, m[structs.Tasks])
 
 		// 2 tasks with command
 		require.Len(t, m[structs.Commands], 2)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "/bin/sleep",
-			Scope: []string{"team-sleepy", "demo-sleep", "prod-sleeper-group-one", "prod-sleep-task-one"},
+			Scope: []string{"team-sleepy", job.ID, "prod-sleeper-group-one", "prod-sleep-task-one"},
 		}, {
 			ID:    "/usr/sbin/sleep",
-			Scope: []string{"team-sleepy", "demo-sleep", "prod-sleeper-group-one", "prod-task-two"},
+			Scope: []string{"team-sleepy", job.ID, "prod-sleeper-group-one", "prod-task-two"},
 		}}, m[structs.Commands])
 
 		// 1 task with image
 		require.Len(t, m[structs.Images], 1)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "sleeper:latest",
-			Scope: []string{"team-sleepy", "demo-sleep", "qa-sleeper-group-one", "qa-sleep-task-one"},
+			Scope: []string{"team-sleepy", job.ID, "qa-sleeper-group-one", "qa-sleep-task-one"},
 		}}, m[structs.Images])
 
 		// 1 task with class
 		require.Len(t, m[structs.Classes], 1)
 		require.Equal(t, []structs.FuzzyMatch{{
 			ID:    "sleep.class",
-			Scope: []string{"team-sleepy", "demo-sleep", "sleep-in-java", "prod-java-sleep"},
+			Scope: []string{"team-sleepy", job.ID, "sleep-in-java", "prod-java-sleep"},
 		}}, m[structs.Classes])
 	})
 }

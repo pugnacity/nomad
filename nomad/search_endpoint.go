@@ -184,19 +184,22 @@ func (s *Search) getFuzzyMatches(iter memdb.ResultIterator, text string) (map[st
 // Returns the context and score or nil if there is no match.
 func (s *Search) fuzzyMatchSingle(raw interface{}, text string) (structs.Context, *fuzzyMatch) {
 	var (
-		name string
-		ctx  structs.Context
+		name  string // fuzzy searchable name
+		scope []string
+		ctx   structs.Context
 	)
 
 	switch t := raw.(type) {
 	case *structs.Node:
 		name = t.Name
+		scope = []string{t.ID}
 		ctx = structs.Nodes
 	case *structs.Namespace:
 		name = t.Name
 		ctx = structs.Namespaces
 	case *structs.Allocation:
 		name = t.Name
+		scope = []string{t.Namespace, t.ID}
 		ctx = structs.Allocs
 	case *structs.CSIPlugin:
 		name = t.ID
@@ -207,7 +210,7 @@ func (s *Search) fuzzyMatchSingle(raw interface{}, text string) (structs.Context
 		return ctx, &fuzzyMatch{
 			id:    name,
 			score: idx,
-			scope: nil, // currently no non-job sub-types need scoping
+			scope: scope,
 		}
 	}
 
@@ -227,7 +230,7 @@ func (s *Search) fuzzyMatchSingle(raw interface{}, text string) (structs.Context
 func (*Search) fuzzyMatchesJob(j *structs.Job, text string) map[structs.Context][]fuzzyMatch {
 	sm := make(map[structs.Context][]fuzzyMatch)
 	ns := j.Namespace
-	job := j.Name
+	job := j.ID
 
 	// job.name
 	if idx := strings.Index(j.Name, text); idx >= 0 {
@@ -260,7 +263,7 @@ func (*Search) fuzzyMatchesJob(j *structs.Job, text string) map[structs.Context]
 				}
 			}
 
-			// job|group|task|config.{image,driver,class}
+			// job|group|task|config.{image,command,class}
 			switch task.Driver {
 			case "docker":
 				image := getConfigParam(task.Config, "image")
@@ -374,11 +377,65 @@ func getResourceIter(context structs.Context, aclObj *acl.ACL, namespace, prefix
 	}
 }
 
-// namespaceFilter wraps a namespace iterator with a filter for removing
-// namespaces the ACL can't access.
+func wildcard(namespace string) bool {
+	return namespace == structs.AllNamespacesSentinel
+}
+
+func getFuzzyResourceIterator(context structs.Context, aclObj *acl.ACL, namespace string, ws memdb.WatchSet, state *state.StateStore) (memdb.ResultIterator, error) {
+	switch context {
+	case structs.Jobs:
+		if wildcard(namespace) {
+			iter, err := state.Jobs(ws)
+			return namespaceFilterIterator(iter, err, aclObj)
+		}
+		return state.JobsByNamespace(ws, namespace)
+
+	case structs.Allocs:
+		if wildcard(namespace) {
+			iter, err := state.Allocs(ws)
+			return namespaceFilterIterator(iter, err, aclObj)
+		}
+		return state.AllocsByNamespace(ws, namespace)
+
+	case structs.Nodes:
+		return state.Nodes(ws)
+
+	case structs.Plugins:
+		return state.CSIPlugins(ws)
+
+	case structs.Namespaces:
+		iter, err := state.Namespaces(ws)
+		return namespaceFilterIterator(iter, err, aclObj)
+
+	default:
+		return getEnterpriseFuzzyResourceIter(context, aclObj, namespace, ws, state)
+	}
+}
+
+func namespaceFilterIterator(iter memdb.ResultIterator, err error, aclObj *acl.ACL) (memdb.ResultIterator, error) {
+	if err != nil {
+		return nil, err
+	}
+	if aclObj == nil {
+		return iter, nil
+	}
+	return memdb.NewFilterIterator(iter, namespaceFilter(aclObj)), nil
+}
+
+// namespaceFilter wraps an iterator with a filter for removing items that belong
+// to a namespace the ACL cannot access.
 func namespaceFilter(aclObj *acl.ACL) memdb.FilterFunc {
 	return func(v interface{}) bool {
-		return !aclObj.AllowNamespace(v.(*structs.Namespace).Name)
+		switch v.(type) {
+		case *structs.Job:
+			return !aclObj.AllowNamespace(v.(*structs.Job).Namespace)
+		case *structs.Allocation:
+			return !aclObj.AllowNamespace(v.(*structs.Allocation).Namespace)
+		case *structs.Namespace:
+			return !aclObj.AllowNamespace(v.(*structs.Namespace).Name)
+		default:
+			return false
+		}
 	}
 }
 
@@ -567,7 +624,7 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 
 				// types that use fuzzy searching
 				default:
-					iter, err := getResourceIter(ctx, aclObj, namespace, "", ws, state)
+					iter, err := getFuzzyResourceIterator(ctx, aclObj, namespace, ws, state)
 					if err != nil {
 						return err
 					}

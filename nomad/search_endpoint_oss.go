@@ -35,6 +35,12 @@ func getEnterpriseResourceIter(context structs.Context, _ *acl.ACL, namespace, p
 	return nil, fmt.Errorf("context must be one of %v or 'all' for all contexts; got %q", allContexts, context)
 }
 
+// getEnterpriseFuzzyResourceIter is used to retrieve an iterator over an enterprise
+// only table.
+func getEnterpriseFuzzyResourceIter(context structs.Context, _ *acl.ACL, _ string, _ memdb.WatchSet, _ *state.StateStore) (memdb.ResultIterator, error) {
+	return nil, fmt.Errorf("context must be one of %v or 'all' for all contexts; got %q", allContexts, context)
+}
+
 // sufficientSearchPerms returns true if the provided ACL has access to each
 // capability required for prefix searching for the given context.
 //
