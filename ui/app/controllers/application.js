@@ -19,9 +19,14 @@ export default class ApplicationController extends Controller {
     {
       region: 'region',
     },
+    {
+      oneTimeToken: 'ott',
+    },
   ];
 
   region = null;
+
+  oneTimeToken = null;
 
   error = null;
 
