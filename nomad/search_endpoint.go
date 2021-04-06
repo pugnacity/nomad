@@ -426,13 +426,13 @@ func namespaceFilterIterator(iter memdb.ResultIterator, err error, aclObj *acl.A
 // to a namespace the ACL cannot access.
 func namespaceFilter(aclObj *acl.ACL) memdb.FilterFunc {
 	return func(v interface{}) bool {
-		switch v.(type) {
+		switch t := v.(type) {
 		case *structs.Job:
-			return !aclObj.AllowNamespace(v.(*structs.Job).Namespace)
+			return !aclObj.AllowNamespace(t.Namespace)
 		case *structs.Allocation:
-			return !aclObj.AllowNamespace(v.(*structs.Allocation).Namespace)
+			return !aclObj.AllowNamespace(t.Namespace)
 		case *structs.Namespace:
-			return !aclObj.AllowNamespace(v.(*structs.Namespace).Name)
+			return !aclObj.AllowNamespace(t.Name)
 		default:
 			return false
 		}
