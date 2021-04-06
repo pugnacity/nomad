@@ -189,13 +189,21 @@ module('Unit | Util | AllocationStatsTracker', function() {
     assert.deepEqual(tracker.get('cpu'), [], 'No tracked cpu yet');
     assert.deepEqual(tracker.get('memory'), [], 'No tracked memory yet');
 
+    const expected = [
+      { task: 'service', reservedCPU: 100, reservedMemory: 256, cpu: [], memory: [] },
+      { task: 'sidecar', reservedCPU: 50, reservedMemory: 128, cpu: [], memory: [] },
+      { task: 'log-shipper', reservedCPU: 50, reservedMemory: 128, cpu: [], memory: [] },
+    ];
+
+    console.log('found');
+    console.log(JSON.stringify(tracker.get('tasks')));
+    console.log('expected');
+    console.log(JSON.stringify(expected));
+    console.log(JSON.stringify(expected) == JSON.stringify(tracker.get('tasks')));
+
     assert.deepEqual(
       tracker.get('tasks'),
-      [
-        { task: 'service', reservedCPU: 100, reservedMemory: 256, cpu: [], memory: [] },
-        { task: 'sidecar', reservedCPU: 50, reservedMemory: 128, cpu: [], memory: [] },
-        { task: 'log-shipper', reservedCPU: 50, reservedMemory: 128, cpu: [], memory: [] },
-      ],
+      expected,
       'tasks represents the tasks for the allocation with no stats yet'
     );
 
