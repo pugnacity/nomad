@@ -47,6 +47,6 @@ func TestSearch_FuzzySearch(t *testing.T) {
 	require.Len(t, commandMatches, 1)
 	require.Equal(t, "/bin/sleep", commandMatches[0].ID)
 	require.Equal(t, []string{
-		"default", "redis", "group1", "task1",
+		"default", *job.ID, "group1", "task1",
 	}, commandMatches[0].Scope)
 }

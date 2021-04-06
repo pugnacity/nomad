@@ -50,7 +50,7 @@ func TestHTTP_FuzzySearchWithIllegalMethod(t *testing.T) {
 	})
 }
 
-func createCmdJobForTest(name, cmd string, s *TestAgent, t *testing.T) {
+func createCmdJobForTest(name, cmd string, s *TestAgent, t *testing.T) *structs.Job {
 	job := mock.Job()
 	job.Name = name
 	job.TaskGroups[0].Tasks[0].Config["command"] = cmd
@@ -58,6 +58,7 @@ func createCmdJobForTest(name, cmd string, s *TestAgent, t *testing.T) {
 	state := s.Agent.server.State()
 	err := state.UpsertJob(structs.MsgTypeTestSetup, 1000, job)
 	require.NoError(t, err)
+	return job
 }
 
 func TestHTTP_PrefixSearch_POST(t *testing.T) {
@@ -583,7 +584,7 @@ func TestHTTP_FuzzySearch_AllContext(t *testing.T) {
 	t.Parallel()
 
 	httpTest(t, nil, func(s *TestAgent) {
-		createCmdJobForTest("job1", "/bin/aardvark", s, t)
+		jobID := createCmdJobForTest("job1", "/bin/aardvark", s, t).ID
 
 		state := s.Agent.server.State()
 		eval1 := mock.Eval()
@@ -608,7 +609,7 @@ func TestHTTP_FuzzySearch_AllContext(t *testing.T) {
 		require.Equal(t, eval1.ID, matchedEvals[0].ID)
 		require.Equal(t, "/bin/aardvark", matchedCommands[0].ID)
 		require.Equal(t, []string{
-			"default", "job1", "web", "web",
+			"default", jobID, "web", "web",
 		}, matchedCommands[0].Scope)
 		require.Equal(t, "8000", header(respW, "X-Nomad-Index"))
 	})
