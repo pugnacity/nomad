@@ -17,7 +17,9 @@ import (
 
 const (
 	// truncateLimit is the maximum number of matches that will be returned for a
-	// prefix for a specific context
+	// prefix for a specific context.
+	//
+	// Does not apply to fuzzy searching.
 	truncateLimit = 20
 )
 
@@ -95,8 +97,12 @@ func (s *Search) getPrefixMatches(iter memdb.ResultIterator, prefix string) ([]s
 }
 
 func (s *Search) getFuzzyMatches(iter memdb.ResultIterator, text string) (map[structs.Context][]structs.FuzzyMatch, map[structs.Context]bool) {
+	fmt.Println("getFuzzyMatches enter, text:", text, "iter:", iter)
+
 	limitQuery := s.srv.config.SearchConfig.LimitQuery
 	limitResults := s.srv.config.SearchConfig.LimitResults
+
+	fmt.Println("limitQuery:", limitQuery, "limitResults:", limitResults)
 
 	unsorted := make(map[structs.Context][]fuzzyMatch)
 	truncations := make(map[structs.Context]bool)
@@ -146,6 +152,7 @@ func (s *Search) getFuzzyMatches(iter memdb.ResultIterator, text string) (map[st
 
 	for i := 0; i < limitQuery; i++ {
 		raw := iter.Next()
+		fmt.Println("  i:", i, "raw==nil", raw == nil)
 		if raw == nil {
 			break
 		}
@@ -231,6 +238,8 @@ func (*Search) fuzzyMatchesJob(j *structs.Job, text string) map[structs.Context]
 	sm := make(map[structs.Context][]fuzzyMatch)
 	ns := j.Namespace
 	job := j.ID
+
+	fmt.Println("fuzzyMatchesJob, jobNS:", j.Namespace, "id:", j.ID, "text:", text)
 
 	// job.name
 	if idx := strings.Index(j.Name, text); idx >= 0 {
@@ -371,12 +380,15 @@ func getResourceIter(context structs.Context, aclObj *acl.ACL, namespace, prefix
 		if aclObj == nil {
 			return iter, nil
 		}
-		return memdb.NewFilterIterator(iter, namespaceFilter(aclObj)), nil
+		return memdb.NewFilterIterator(iter, nsCapFilter(aclObj)), nil
 	default:
 		return getEnterpriseResourceIter(context, aclObj, namespace, prefix, ws, state)
 	}
 }
 
+// wildcard is a helper for determining if namespace is '*', used to determine
+// if objects from every namespace should be considered when iterating, and that
+// additional ACL checks will be necessary.
 func wildcard(namespace string) bool {
 	return namespace == structs.AllNamespacesSentinel
 }
@@ -386,53 +398,73 @@ func getFuzzyResourceIterator(context structs.Context, aclObj *acl.ACL, namespac
 	case structs.Jobs:
 		if wildcard(namespace) {
 			iter, err := state.Jobs(ws)
-			return namespaceFilterIterator(iter, err, aclObj)
+			return nsCapIterFilter(iter, err, aclObj)
 		}
 		return state.JobsByNamespace(ws, namespace)
 
 	case structs.Allocs:
 		if wildcard(namespace) {
 			iter, err := state.Allocs(ws)
-			return namespaceFilterIterator(iter, err, aclObj)
+			return nsCapIterFilter(iter, err, aclObj)
 		}
 		return state.AllocsByNamespace(ws, namespace)
 
 	case structs.Nodes:
+		if wildcard(namespace) {
+			iter, err := state.Nodes(ws)
+			return nsCapIterFilter(iter, err, aclObj)
+		}
 		return state.Nodes(ws)
 
 	case structs.Plugins:
+		if wildcard(namespace) {
+			iter, err := state.CSIPlugins(ws)
+			return nsCapIterFilter(iter, err, aclObj)
+		}
 		return state.CSIPlugins(ws)
 
 	case structs.Namespaces:
 		iter, err := state.Namespaces(ws)
-		return namespaceFilterIterator(iter, err, aclObj)
+		return nsCapIterFilter(iter, err, aclObj)
 
 	default:
 		return getEnterpriseFuzzyResourceIter(context, aclObj, namespace, ws, state)
 	}
 }
 
-func namespaceFilterIterator(iter memdb.ResultIterator, err error, aclObj *acl.ACL) (memdb.ResultIterator, error) {
+// nsCapIterFilter wraps an iterator with a filter for removing items that the token
+// does not have permission to read (whether missing the capability or in the
+// wrong namespace).
+func nsCapIterFilter(iter memdb.ResultIterator, err error, aclObj *acl.ACL) (memdb.ResultIterator, error) {
 	if err != nil {
 		return nil, err
 	}
 	if aclObj == nil {
 		return iter, nil
 	}
-	return memdb.NewFilterIterator(iter, namespaceFilter(aclObj)), nil
+	return memdb.NewFilterIterator(iter, nsCapFilter(aclObj)), nil
 }
 
-// namespaceFilter wraps an iterator with a filter for removing items that belong
-// to a namespace the ACL cannot access.
-func namespaceFilter(aclObj *acl.ACL) memdb.FilterFunc {
+// nsCapFilter produces a memdb.FilterFunc for removing objects not accessible
+// by aclObj during a table scan.
+func nsCapFilter(aclObj *acl.ACL) memdb.FilterFunc {
 	return func(v interface{}) bool {
 		switch t := v.(type) {
 		case *structs.Job:
-			return !aclObj.AllowNamespace(t.Namespace)
+			return !aclObj.AllowNsOp(t.Namespace, acl.NamespaceCapabilityReadJob)
+
 		case *structs.Allocation:
-			return !aclObj.AllowNamespace(t.Namespace)
+			return !aclObj.AllowNsOp(t.Namespace, acl.NamespaceCapabilityReadJob)
+
 		case *structs.Namespace:
 			return !aclObj.AllowNamespace(t.Name)
+
+		case *structs.Node:
+			return !aclObj.AllowNodeRead()
+
+		case *structs.CSIPlugin:
+			return !aclObj.AllowPluginRead()
+
 		default:
 			return false
 		}
@@ -510,7 +542,7 @@ func (s *Search) PrefixSearch(args *structs.SearchRequest, reply *structs.Search
 		run: func(ws memdb.WatchSet, state *state.StateStore) error {
 
 			iters := make(map[structs.Context]memdb.ResultIterator)
-			contexts := expandSearchContexts(aclObj, namespace, args.Context)
+			contexts := filteredSearchContexts(aclObj, namespace, args.Context)
 
 			for _, ctx := range contexts {
 				iter, err := getResourceIter(ctx, aclObj, namespace, roundUUIDDownIfOdd(args.Prefix, args.Context), ws, state)
@@ -592,7 +624,7 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 	namespace := args.RequestNamespace()
 	context := args.Context
 
-	if !sufficientSearchPerms(aclObj, namespace, context) {
+	if !sufficientFuzzySearchPerms(aclObj, namespace, context) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -607,11 +639,17 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 
 			fuzzyIters := make(map[structs.Context]memdb.ResultIterator)
 			prefixIters := make(map[structs.Context]memdb.ResultIterator)
-			contexts := expandSearchContexts(aclObj, namespace, context)
 
-			for _, ctx := range contexts {
+			prefixContexts := filteredSearchContexts(aclObj, namespace, context)
+			fuzzyContexts := filteredFuzzySearchContexts(aclObj, namespace, context)
+
+			fmt.Println("prefixContexts:", prefixContexts)
+			fmt.Println("fuzzyContexts:", fuzzyContexts)
+
+			// Gather the iterators used for prefix searching from those allowable contexts
+			for _, ctx := range prefixContexts {
 				switch ctx {
-				// types that use UUID prefix searching
+				// only apply on the types that use UUID prefix searching
 				case structs.Evals, structs.Deployments, structs.ScalingPolicies, structs.Volumes:
 					iter, err := getResourceIter(ctx, aclObj, namespace, roundUUIDDownIfOdd(args.Prefix, args.Context), ws, state)
 					if err != nil {
@@ -621,8 +659,15 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 					} else {
 						prefixIters[ctx] = iter
 					}
+				}
+			}
 
-				// types that use fuzzy searching
+			// Gather the iterators used for fuzzy searching from those allowable contexts
+			for _, ctx := range fuzzyContexts {
+				switch ctx {
+				// skip the types that use UUID prefix searching
+				case structs.Evals, structs.Deployments, structs.ScalingPolicies, structs.Volumes:
+					continue
 				default:
 					iter, err := getFuzzyResourceIterator(ctx, aclObj, namespace, ws, state)
 					if err != nil {
@@ -631,6 +676,9 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 					fuzzyIters[ctx] = iter
 				}
 			}
+
+			fmt.Println("prefixIters:", prefixIters)
+			fmt.Println("fuzzyIters:", fuzzyIters)
 
 			// Set prefix matches of the given text
 			for ctx, iter := range prefixIters {
@@ -644,8 +692,10 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 			}
 
 			// Set fuzzy matches of the given text
-			for _, iter := range fuzzyIters {
+			for kind, iter := range fuzzyIters {
+				fmt.Println("\n\nwill get fuzzy matches for kind:", kind, "text:", args.Text, "iter:", iter)
 				matches, truncations := s.getFuzzyMatches(iter, args.Text)
+				fmt.Println(" -> matches:", matches, "truncations:", truncations)
 				for ctx := range matches {
 					reply.Matches[ctx] = matches[ctx]
 				}
@@ -657,7 +707,7 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 			// Set the index for the context. If the context has been specified,
 			// it will be used as the index of the response. Otherwise, the maximum
 			// index from all the resources will be used.
-			for _, ctx := range contexts {
+			for _, ctx := range fuzzyContexts {
 				index, err := state.Index(contextToIndex(ctx))
 				if err != nil {
 					return err
@@ -675,6 +725,8 @@ func (s *Search) FuzzySearch(args *structs.FuzzySearchRequest, reply *structs.Fu
 	return s.srv.blockingRPC(&opts)
 }
 
+// expandContext returns either allContexts if context is 'all', or a one
+// element slice with context by itself.
 func expandContext(context structs.Context) []structs.Context {
 	switch context {
 	case structs.All:
@@ -684,4 +736,29 @@ func expandContext(context structs.Context) []structs.Context {
 	default:
 		return []structs.Context{context}
 	}
+}
+
+// sufficientFuzzySearchPerms returns true if the searched namespace is the wildcard
+// namespace, indicating we should bypass the preflight ACL checks otherwise performed
+// by sufficientSearchPerms. This is to support fuzzy searching multiple namespaces
+// with tokens that have permission for more than one namespace. The actual ACL
+// validation will be performed while scanning objects instead, where we have finally
+// have a concrete namespace to work with.
+func sufficientFuzzySearchPerms(aclObj *acl.ACL, namespace string, context structs.Context) bool {
+	if wildcard(namespace) {
+		return true
+	}
+	return sufficientSearchPerms(aclObj, namespace, context)
+}
+
+// filterFuzzySearchContexts returns every context asked for if the searched namespace
+// is the wildcard namespace, indicating we should bypass ACL checks otherwise
+// performed by filterSearchContexts. Instead we will rely on iterator filters to
+// perform the ACL validation while scanning objects, where we have a concrete
+// namespace to work with.
+func filteredFuzzySearchContexts(aclObj *acl.ACL, namespace string, context structs.Context) []structs.Context {
+	if wildcard(namespace) {
+		return expandContext(context)
+	}
+	return filteredSearchContexts(aclObj, namespace, context)
 }

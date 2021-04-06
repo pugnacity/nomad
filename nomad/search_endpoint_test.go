@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-hclog"
 	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/helper/uuid"
@@ -1441,6 +1442,7 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 
 	s, root, cleanup := TestACLServer(t, func(c *Config) {
 		c.NumSchedulers = 0
+		c.Logger.SetLevel(hclog.Warn)
 	})
 	defer cleanup()
 
@@ -1449,6 +1451,7 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 	fsmState := s.fsm.State()
 
 	ns := mock.Namespace()
+	ns.Name = "team-job-app"
 	require.NoError(t, fsmState.UpsertNamespaces(500, []*structs.Namespace{ns}))
 
 	job1 := mock.Job()
@@ -1458,7 +1461,9 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 	job2.Namespace = ns.Name
 	require.NoError(t, fsmState.UpsertJob(structs.MsgTypeTestSetup, 504, job2))
 
-	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1001, mock.Node()))
+	node := mock.Node()
+	node.Name = "run-jobs"
+	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1001, node))
 
 	req := &structs.FuzzySearchRequest{
 		Text:    "set-text-in-test",
@@ -1499,7 +1504,7 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 	// Try with a node:read token and expect success due to All context
 	{
 		validToken := mock.CreatePolicyAndToken(t, fsmState, 1007, "test-valid", mock.NodePolicy(acl.PolicyRead))
-		req.Text = "foo"
+		req.Text = "job"
 		req.Context = structs.All
 		req.AuthToken = validToken.SecretID
 		var resp structs.FuzzySearchResponse
@@ -1533,17 +1538,210 @@ func TestSearch_FuzzySearch_Namespace_ACL(t *testing.T) {
 
 	// Try with a management token
 	{
+		req.Text = "job"
 		req.Context = structs.All
 		req.AuthToken = root.SecretID
-		req.Namespace = structs.DefaultNamespace
-		var resp structs.SearchResponse
-		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.PrefixSearch", req, &resp))
+		req.Namespace = job1.Namespace
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
 		require.Equal(t, uint64(1001), resp.Index)
 		require.Len(t, resp.Matches[structs.Jobs], 1)
-		require.Equal(t, job1.ID, resp.Matches[structs.Jobs][0])
+		require.Equal(t, job1.ID, resp.Matches[structs.Jobs][0].ID)
 		require.Len(t, resp.Matches[structs.Nodes], 1)
-		require.Len(t, resp.Matches[structs.Namespaces], 2)
+		require.Len(t, resp.Matches[structs.Namespaces], 1) // matches "team-job-app"
 	}
+}
+
+func TestSearch_FuzzySearch_MultiNamespace_ACL(t *testing.T) {
+	t.Parallel()
+
+	s, root, cleanupS := TestACLServer(t, func(c *Config) {
+		c.NumSchedulers = 0
+		c.Logger.SetLevel(hclog.Warn)
+	})
+	defer cleanupS()
+
+	codec := rpcClient(t, s)
+	testutil.WaitForLeader(t, s.RPC)
+	fsmState := s.fsm.State()
+
+	require.NoError(t, fsmState.UpsertNamespaces(500, []*structs.Namespace{{
+		Name:        "teamA",
+		Description: "first namespace",
+		CreateIndex: 100,
+		ModifyIndex: 200,
+	}, {
+		Name:        "teamB",
+		Description: "second namespace",
+		CreateIndex: 101,
+		ModifyIndex: 201,
+	}, {
+		Name:        "teamC",
+		Description: "third namespace",
+		CreateIndex: 102,
+		ModifyIndex: 202,
+	}}))
+
+	// Upsert 3 jobs each in separate namespace
+	job1 := mock.Job()
+	job1.Name = "teamA-job1"
+	job1.ID = "job1"
+	job1.Namespace = "teamA"
+	require.NoError(t, fsmState.UpsertJob(structs.MsgTypeTestSetup, 502, job1))
+
+	job2 := mock.Job()
+	job2.Name = "teamB-job2"
+	job2.ID = "job2"
+	job2.Namespace = "teamB"
+	require.NoError(t, fsmState.UpsertJob(structs.MsgTypeTestSetup, 503, job2))
+
+	job3 := mock.Job()
+	job3.Name = "teamC-job3"
+	job3.ID = "job3"
+	job3.Namespace = "teamC"
+	require.NoError(t, fsmState.UpsertJob(structs.MsgTypeTestSetup, 504, job3))
+
+	// Upsert a node
+	node := mock.Node()
+	node.Name = "node-for-teams"
+	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1001, node))
+
+	// Upsert a node that will not be matched
+	node2 := mock.Node()
+	node2.Name = "node-for-ops"
+	require.NoError(t, fsmState.UpsertNode(structs.MsgTypeTestSetup, 1002, node2))
+
+	// Create parameterized requests
+	request := func(text, namespace, token string, context structs.Context) *structs.FuzzySearchRequest {
+		return &structs.FuzzySearchRequest{
+			Text:    text,
+			Context: context,
+			QueryOptions: structs.QueryOptions{
+				Region:    "global",
+				Namespace: namespace,
+				AuthToken: token,
+			},
+		}
+	}
+
+	t.Run("without a token expect failure", func(t *testing.T) {
+		var resp structs.FuzzySearchResponse
+		req := request("anything", job1.Namespace, "", structs.Jobs)
+		err := msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp)
+		require.EqualError(t, err, structs.ErrPermissionDenied.Error())
+	})
+
+	t.Run("with an invalid token expect failure", func(t *testing.T) {
+		invalidToken := mock.CreatePolicyAndToken(t, fsmState, 1003, "test-invalid",
+			mock.NamespacePolicy(structs.DefaultNamespace, "", []string{acl.NamespaceCapabilityListJobs}))
+		req := request("anything", job1.Namespace, invalidToken.SecretID, structs.Jobs)
+		var resp structs.FuzzySearchResponse
+		err := msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp)
+		require.EqualError(t, err, structs.ErrPermissionDenied.Error())
+	})
+
+	t.Run("with node:read token search namespaces expect failure", func(t *testing.T) {
+		validToken := mock.CreatePolicyAndToken(t, fsmState, 1005, "test-invalid2", mock.NodePolicy(acl.PolicyRead))
+		req := request("team", job1.Namespace, validToken.SecretID, structs.Namespaces)
+		var resp structs.FuzzySearchResponse
+		err := msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp)
+		require.EqualError(t, err, structs.ErrPermissionDenied.Error())
+	})
+
+	t.Run("with node:read token search all expect success", func(t *testing.T) {
+		validToken := mock.CreatePolicyAndToken(t, fsmState, 1007, "test-valid", mock.NodePolicy(acl.PolicyRead))
+		req := request("team", job1.Namespace, validToken.SecretID, structs.All)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Equal(t, uint64(1002), resp.Index) // the latest nodes index
+		require.Len(t, resp.Matches[structs.Nodes], 1)
+
+		// Jobs filtered out since token only has access to node:read
+		require.Len(t, resp.Matches[structs.Jobs], 0)
+	})
+
+	t.Run("with a teamB/job:read token search all expect 1 job", func(t *testing.T) {
+		token := mock.CreatePolicyAndToken(t, fsmState, 1009, "test-valid2",
+			mock.NamespacePolicy(job2.Namespace, "", []string{acl.NamespaceCapabilityReadJob}))
+		req := request("team", job2.Namespace, token.SecretID, structs.All)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Len(t, resp.Matches[structs.Jobs], 1) // YOU ARE HERE
+		require.Equal(t, job2.ID, resp.Matches[structs.Jobs][0].ID)
+
+		// Index of job - not node - because node context is filtered out
+		require.Equal(t, uint64(504), resp.Index)
+
+		// Nodes filtered out since token only has access to namespace:read-job
+		require.Len(t, resp.Matches[structs.Nodes], 0)
+	})
+
+	// Using a token that can read jobs in 2 namespaces, we should get job results from
+	// both those namespaces (using wildcard namespace in the query) but not the
+	// third (and from no other contexts).
+	t.Run("with a multi-ns job:read token search all expect 2 jobs", func(t *testing.T) {
+		policyB := mock.NamespacePolicy(job2.Namespace, "", []string{acl.NamespaceCapabilityReadJob})
+		mock.CreatePolicy(t, fsmState, uint64(1009), "policyB", policyB)
+
+		policyC := mock.NamespacePolicy(job3.Namespace, "", []string{acl.NamespaceCapabilityReadJob})
+		mock.CreatePolicy(t, fsmState, uint64(1010), "policyC", policyC)
+
+		token := mock.CreateToken(t, fsmState, uint64(1011), []string{"policyB", "policyC"})
+		req := request("team", structs.AllNamespacesSentinel, token.SecretID, structs.Jobs)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Len(t, resp.Matches[structs.Jobs], 2)
+		require.Equal(t, job2.ID, resp.Matches[structs.Jobs][0].ID)
+		require.Equal(t, job3.ID, resp.Matches[structs.Jobs][1].ID)
+
+		// Index of job - not node - because node context is filtered out
+		require.Equal(t, uint64(504), resp.Index)
+	})
+
+	// Using a management token, we should get job results from all three namespaces
+	// (using wildcard namespace in the query).
+	t.Run("with a management token search all expect 3 jobs", func(t *testing.T) {
+		req := request("team", structs.AllNamespacesSentinel, root.SecretID, structs.Jobs)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Len(t, resp.Matches[structs.Jobs], 3)
+		require.Equal(t, job1.ID, resp.Matches[structs.Jobs][0].ID)
+		require.Equal(t, job2.ID, resp.Matches[structs.Jobs][1].ID)
+		require.Equal(t, job3.ID, resp.Matches[structs.Jobs][2].ID)
+
+		// Index of job - not node - because node context is filtered out
+		require.Equal(t, uint64(504), resp.Index)
+	})
+
+	// Using a token that can read nodes, we should get our 1 matching node when
+	// searching the nodes context.
+	t.Run("with node:read token read nodes", func(t *testing.T) {
+		policy := mock.NodePolicy("read")
+		mock.CreatePolicy(t, fsmState, uint64(1012), "node-read-policy", policy)
+
+		token := mock.CreateToken(t, fsmState, uint64(1013), []string{"node-read-policy"})
+		req := request("team", structs.AllNamespacesSentinel, token.SecretID, structs.Nodes)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Len(t, resp.Matches[structs.Nodes], 1)
+		require.Equal(t, "node-for-teams", resp.Matches[structs.Nodes][0].ID)
+	})
+
+	// Using a token that cannot read nodes, we should get no matching nodes when
+	// searching the nodes context.
+	t.Run("with a job:read token read nodes", func(t *testing.T) {
+		policy := mock.AgentPolicy("read")
+		mock.CreatePolicy(t, fsmState, uint64(1014), "agent-read-policy", policy)
+
+		token := mock.CreateToken(t, fsmState, uint64(1015), []string{"agent-read-policy"})
+		req := request("team", structs.AllNamespacesSentinel, token.SecretID, structs.Nodes)
+		var resp structs.FuzzySearchResponse
+		require.NoError(t, msgpackrpc.CallWithCodec(codec, "Search.FuzzySearch", req, &resp))
+		require.Empty(t, resp.Matches[structs.Nodes])
+	})
+
+	// todo YOU ARE HERE, add tests for everything in nsCapFilter
+
 }
 
 func TestSearch_FuzzySearch_Job(t *testing.T) {

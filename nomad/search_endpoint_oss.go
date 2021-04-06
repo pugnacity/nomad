@@ -86,11 +86,11 @@ func sufficientSearchPerms(aclObj *acl.ACL, namespace string, context structs.Co
 	return true
 }
 
-// expandSearchContexts returns the expanded set of contexts of context, filtered down
+// filteredSearchContexts returns the expanded set of contexts, filtered down
 // to the subset of contexts the aclObj is valid for.
 //
 // If aclObj is nil, no contexts are filtered out.
-func expandSearchContexts(aclObj *acl.ACL, namespace string, context structs.Context) []structs.Context {
+func filteredSearchContexts(aclObj *acl.ACL, namespace string, context structs.Context) []structs.Context {
 	desired := expandContext(context)
 
 	// If ACLs aren't enabled return all contexts
