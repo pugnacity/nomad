@@ -117,45 +117,63 @@ func (c *cniNetworkConfigurator) Setup(ctx context.Context, alloc *structs.Alloc
 		c.logger.Debug("received result from CNI", "result", string(resultJSON))
 	}
 
+	return c.cniToAllocNet(res)
+
+}
+
+// cniToAllocNet converts a CNIResult to an AllocNetworkStatus or returns an
+// error.
+func (c *cniNetworkConfigurator) cniToAllocNet(res *cni.CNIResult) (*structs.AllocNetworkStatus, error) {
 	netStatus := new(structs.AllocNetworkStatus)
 
 	if len(res.Interfaces) > 0 {
-		// find an interface with Sandbox set, or any one of them if no
-		// interface has it set
+		// Remove invalid interface entries
+		for name, iface := range res.Interfaces {
+			if iface == nil {
+				// this should never happen but this value is coming from external
+				// plugins so we should guard against it
+				delete(res.Interfaces, name)
+			}
+		}
+
+		// Find the first sandbox interface
 		var iface *cni.Config
 		var name string
 		for name, iface = range res.Interfaces {
-			if iface != nil && iface.Sandbox != "" {
+			if iface.Sandbox != "" {
 				break
 			}
 		}
 		if iface == nil {
-			// this should never happen but this value is coming from external
-			// plugins so we should guard against it
 			return nil, fmt.Errorf("failed to configure network: no valid interface")
 		}
 
 		netStatus.InterfaceName = name
+
+		// Plugin may not have set IP addresses, but use the first one
+		// if there are any.
 		if len(iface.IPConfigs) > 0 {
 			netStatus.Address = iface.IPConfigs[0].IP.String()
 		}
 	}
 
+	// If no address was found, use the first address found as a fallback.
 	if netStatus.Address == "" {
-		c.logger.Debug("no address found for sandboxed interface from CNI result, using first available")
 		var found bool
-		for _, iface := range res.Interfaces {
+		for name, iface := range res.Interfaces {
 			if len(iface.IPConfigs) > 0 {
+				c.logger.Debug("no address found for sandboxed interface from CNI result, using first available", "interface", name)
 				netStatus.Address = iface.IPConfigs[0].IP.String()
 				found = true
 				break
 			}
 		}
 		if !found {
-			c.logger.Warn("no address could be found from CNI result", "allocID", alloc.ID)
+			c.logger.Warn("no address could be found from CNI result")
 		}
 	}
 
+	// Use the first DNS results.
 	if len(res.DNS) > 0 {
 		netStatus.DNS = &structs.DNSConfig{
 			Servers:  res.DNS[0].Nameservers,
@@ -165,7 +183,6 @@ func (c *cniNetworkConfigurator) Setup(ctx context.Context, alloc *structs.Alloc
 	}
 
 	return netStatus, nil
-
 }
 
 func loadCNIConf(confDir, name string) ([]byte, error) {
