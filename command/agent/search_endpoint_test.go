@@ -221,10 +221,10 @@ func TestHTTP_FuzzySearch_MultipleJobs(t *testing.T) {
 	t.Parallel()
 
 	httpTest(t, nil, func(s *TestAgent) {
-		createCmdJobForTest("job1", "/bin/yes", s, t)
-		createCmdJobForTest("job2", "/bin/no", s, t)
-		createCmdJobForTest("job3", "/opt/java", s, t) // no match
-		createCmdJobForTest("job4", "/sbin/ping", s, t)
+		job1ID := createCmdJobForTest("job1", "/bin/yes", s, t).ID
+		job2ID := createCmdJobForTest("job2", "/bin/no", s, t).ID
+		_ = createCmdJobForTest("job3", "/opt/java", s, t).ID // no match
+		job4ID := createCmdJobForTest("job4", "/sbin/ping", s, t).ID
 
 		data := structs.FuzzySearchRequest{Text: "bin", Context: structs.Jobs}
 		req, err := http.NewRequest("POST", "/v1/search/fuzzy", encodeReq(data))
@@ -245,13 +245,13 @@ func TestHTTP_FuzzySearch_MultipleJobs(t *testing.T) {
 
 		exp := []structs.FuzzyMatch{{
 			ID:    "/bin/no",
-			Scope: []string{"default", "job2", "web", "web"},
+			Scope: []string{"default", job2ID, "web", "web"},
 		}, {
 			ID:    "/bin/yes",
-			Scope: []string{"default", "job1", "web", "web"},
+			Scope: []string{"default", job1ID, "web", "web"},
 		}, {
 			ID:    "/sbin/ping",
-			Scope: []string{"default", "job4", "web", "web"},
+			Scope: []string{"default", job4ID, "web", "web"},
 		}}
 		require.Equal(t, exp, commands)
 
